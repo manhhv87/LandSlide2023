@@ -117,8 +117,7 @@ def parse_args():
     parser.add_argument('--crop-size', type=int, default=512,
                         help='crop image size')
 
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
 
 
 NUM_CLASS = 2
@@ -129,7 +128,7 @@ kwargs = {'num_workers': 0, 'pin_memory': True}
 train_loader, test_loader = make_data_loader(args, **kwargs)
 
 convnet = ResNet50(pretrained=False)
-pan = PAN(convnet.blocks[::-1])
+pan = PAN(blocks=convnet.blocks[::-1], num_class=NUM_CLASS)
 
 convnet.to(device)
 pan.to(device)
@@ -138,8 +137,8 @@ weight = None
 criterion = SegmentationLosses(weight=weight, cuda=args.cuda).build_loss(mode='ce')
 
 model_name = ['convnet', 'pan']
-optimizer = {'convnet': optim.SGD(convnet.parameters(), lr=args.lr, weight_decay=1e-4),
-             'pan': optim.SGD(pan.parameters(), lr=args.lr, weight_decay=1e-4)}
+optimizer = {'convnet': optim.Adam(convnet.parameters(), lr=args.lr, weight_decay=1e-4),
+             'pan': optim.Adam(pan.parameters(), lr=args.lr, weight_decay=1e-4)}
 
 optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
                           'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9)}

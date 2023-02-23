@@ -21,26 +21,15 @@ class ResNet50(nn.Module):
         x = self.model.conv1(x)
         x = self.model.bn1(x)
         x = self.model.relu(x)
-        x = self.model.maxpool(x)
+        x = self.model.max_pool(x)
 
         for i, block in enumerate(self.blocks):
             x = block(x)
             feature_map.append(x)
 
         out = nn.AvgPool2d(x.shape[2:])(x).view(x.shape[0], -1)
-
         return feature_map, out
 
-
-# class Classifier(nn.Module):
-#     def __init__(self, in_features=2048, num_class=20):
-#         super(Classifier, self).__init__()
-#         self.fc1 = nn.Linear(in_features, num_class)
-#         self.relu = nn.ReLU(inplace=True)
-#
-#     def forward(self, x):
-#         x = self.fc1(x)
-#         return x
 
 class FPA(nn.Module):
     def __init__(self, channels=2048):
@@ -54,46 +43,45 @@ class FPA(nn.Module):
         self.channels_cond = channels
 
         # Master branch
-        self.conv_master = nn.Conv2d(self.channels_cond, channels, kernel_size=1, bias=False)  # 2048,2048
-        self.bn_master = nn.BatchNorm2d(channels)
+        self.conv_master = nn.Conv2d(in_channels=self.channels_cond, out_channels=channels,
+                                     kernel_size=1, bias=False)  # 2048,2048
+        self.bn_master = nn.BatchNorm2d(num_features=channels)
 
         # Global pooling branch
-        self.conv_gpb = nn.Conv2d(self.channels_cond, channels, kernel_size=1, bias=False)  # 2048,2048
-        self.bn_gpb = nn.BatchNorm2d(channels)
+        self.conv_gpb = nn.Conv2d(in_channels=self.channels_cond, out_channels=channels,
+                                  kernel_size=1, bias=False)  # 2048,2048
+        self.bn_gpb = nn.BatchNorm2d(num_features=channels)
 
         # C333 because of the shape of last feature maps is (16, 16).
-        self.conv7x7_1 = nn.Conv2d(self.channels_cond, channels_mid, kernel_size=(7, 7), stride=2, padding=3,
-                                   bias=False)  # 2048,512
-        self.bn1_1 = nn.BatchNorm2d(channels_mid)
-        self.conv5x5_1 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(5, 5), stride=2, padding=2,
-                                   bias=False)  # 512,512
-        self.bn2_1 = nn.BatchNorm2d(channels_mid)
-        self.conv3x3_1 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(3, 3), stride=2, padding=1,
-                                   bias=False)  # 512,512
-        self.bn3_1 = nn.BatchNorm2d(channels_mid)
+        self.conv7x7_1 = nn.Conv2d(in_channels=self.channels_cond, out_channels=channels_mid,
+                                   kernel_size=(7, 7), stride=2, padding=3, bias=False)  # 2048,512
+        self.bn1_1 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv5x5_1 = nn.Conv2d(in_channels=channels_mid, out_channels=channels_mid,
+                                   kernel_size=(5, 5), stride=2, padding=2, bias=False)  # 512,512
+        self.bn2_1 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv3x3_1 = nn.Conv2d(in_channels=channels_mid, out_channels=channels_mid,
+                                   kernel_size=(3, 3), stride=2, padding=1, bias=False)  # 512,512
+        self.bn3_1 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv7x7_2 = nn.Conv2d(in_channels=channels_mid, out_channels=channels_mid,
+                                   kernel_size=(7, 7), stride=1, padding=3, bias=False)  # 512,512
+        self.bn1_2 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv5x5_2 = nn.Conv2d(in_channels=channels_mid, out_channels=channels_mid,
+                                   kernel_size=(5, 5), stride=1, padding=2, bias=False)  # 512,512
+        self.bn2_2 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv3x3_2 = nn.Conv2d(in_channels=channels_mid, out_channels=channels_mid,
+                                   kernel_size=(3, 3), stride=1, padding=1, bias=False)  # 512,512
+        self.bn3_2 = nn.BatchNorm2d(num_features=channels_mid)
 
-        self.conv7x7_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(7, 7), stride=1, padding=3,
-                                   bias=False)  # 512,512
-        self.bn1_2 = nn.BatchNorm2d(channels_mid)
-        self.conv5x5_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(5, 5), stride=1, padding=2,
-                                   bias=False)  # 512,512
-        self.bn2_2 = nn.BatchNorm2d(channels_mid)
-        self.conv3x3_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(3, 3), stride=1, padding=1,
-                                   bias=False)  # 512,512
-        self.bn3_2 = nn.BatchNorm2d(channels_mid)
-
-        # Convolution Upsample
-        self.conv_upsample_3 = nn.ConvTranspose2d(channels_mid, channels_mid, kernel_size=4, stride=2, padding=1,
-                                                  bias=False)
-        self.bn_upsample_3 = nn.BatchNorm2d(channels_mid)
-
-        self.conv_upsample_2 = nn.ConvTranspose2d(channels_mid, channels_mid, kernel_size=4, stride=2, padding=1,
-                                                  bias=False)
-        self.bn_upsample_2 = nn.BatchNorm2d(channels_mid)
-
-        self.conv_upsample_1 = nn.ConvTranspose2d(channels_mid, channels, kernel_size=4, stride=2, padding=1,
-                                                  bias=False)
-        self.bn_upsample_1 = nn.BatchNorm2d(channels)
+        # Convolution Up-sample
+        self.conv_upsample_3 = nn.ConvTranspose2d(in_channels=channels_mid, out_channels=channels_mid,
+                                                  kernel_size=4, stride=2, padding=1, bias=False)
+        self.bn_upsample_3 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv_upsample_2 = nn.ConvTranspose2d(in_channels=channels_mid, out_channels=channels_mid,
+                                                  kernel_size=4, stride=2, padding=1, bias=False)
+        self.bn_upsample_2 = nn.BatchNorm2d(num_features=channels_mid)
+        self.conv_upsample_1 = nn.ConvTranspose2d(in_channels=channels_mid, out_channels=channels,
+                                                  kernel_size=4, stride=2, padding=1, bias=False)
+        self.bn_upsample_1 = nn.BatchNorm2d(num_features=channels)
 
         self.relu = nn.ReLU(inplace=True)
 
@@ -139,41 +127,41 @@ class FPA(nn.Module):
         x1_merge = self.relu(x1_2 + x2_upsample)
 
         x_master = x_master * self.relu(self.bn_upsample_1(self.conv_upsample_1(x1_merge)))
-        ###????????????????????????????????????????? x_master + x_gdb???????
-        # print('x_master:{},x_gpb:{}'.format(x_master.shape,x_gpb.shape))
         out = self.relu(x_master + x_gpb)
-
         return out
 
 
 class GAU(nn.Module):
-    def __init__(self, channels_high, channels_low, upsample=True):
+    def __init__(self, channels_high, channels_low, up_sample=True):
         super(GAU, self).__init__()
-        # Global Attention Upsample
-        self.upsample = upsample
-        self.conv3x3 = nn.Conv2d(channels_low, channels_low, kernel_size=3, padding=1, bias=False)
-        self.bn_low = nn.BatchNorm2d(channels_low)
 
-        self.conv1x1 = nn.Conv2d(channels_high, channels_low, kernel_size=1, padding=0, bias=False)
-        self.bn_high = nn.BatchNorm2d(channels_low)
+        # Global Attention Up_sample
+        self.up_sample = up_sample
+        self.conv3x3 = nn.Conv2d(in_channels=channels_low, out_channels=channels_low,
+                                 kernel_size=3, padding=1, bias=False)
+        self.bn_low = nn.BatchNorm2d(num_features=channels_low)
 
-        if upsample:
-            self.conv_upsample = nn.ConvTranspose2d(channels_high, channels_low, kernel_size=4, stride=2, padding=1,
-                                                    bias=False)
-            self.bn_upsample = nn.BatchNorm2d(channels_low)
+        self.conv1x1 = nn.Conv2d(in_channels=channels_high, out_channels=channels_low,
+                                 kernel_size=1, padding=0, bias=False)
+        self.bn_high = nn.BatchNorm2d(num_features=channels_low)
+
+        if up_sample:
+            self.conv_upsample = nn.ConvTranspose2d(in_channels=channels_high, out_channels=channels_low,
+                                                    kernel_size=4, stride=2, padding=1, bias=False)
+            self.bn_upsample = nn.BatchNorm2d(num_features=channels_low)
         else:
-            self.conv_reduction = nn.Conv2d(channels_high, channels_low, kernel_size=1, padding=0, bias=False)
-            self.bn_reduction = nn.BatchNorm2d(channels_low)
+            self.conv_reduction = nn.Conv2d(in_channels=channels_high, out_channels=channels_low,
+                                            kernel_size=1, padding=0, bias=False)
+            self.bn_reduction = nn.BatchNorm2d(num_features=channels_low)
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, fms_high, fms_low, fm_mask=None):
+    def forward(self, fms_high, fms_low):
         """
-        Use the high level features with abundant catagory information to weight the low level features with pixel
-        localization information. In the meantime, we further use mask feature maps with catagory-specific information
+        Use the high level features with abundant category information to weight the low level features with pixel
+        localization information. In the meantime, we further use mask feature maps with category-specific information
         to localize the mask position.
         :param fms_high: Features of high level. Tensor.
         :param fms_low: Features of low level.  Tensor.
-        :param fm_mask:
         :return: fms_att_upsample
         """
         b, c, h, w = fms_high.shape
@@ -183,15 +171,11 @@ class GAU(nn.Module):
         fms_high_gp = self.bn_high(fms_high_gp)
         fms_high_gp = self.relu(fms_high_gp)
 
-        # fms_low_mask = torch.cat([fms_low, fm_mask], dim=1)
         fms_low_mask = self.conv3x3(fms_low)
         fms_low_mask = self.bn_low(fms_low_mask)
-        # ?????????可以直接相乘？？？
-        # print('fms_low_mask :{}'.format(fms_low_mask.shape))
-        # print('fms_high_gp :{}'.format(fms_high_gp.shape))
         fms_att = fms_low_mask * fms_high_gp
-        # print('fms_att:{}'.format(fms_att.shape))
-        if self.upsample:
+
+        if self.up_sample:
             out = self.relu(
                 self.bn_upsample(self.conv_upsample(fms_high)) + fms_att)
         else:
@@ -202,29 +186,27 @@ class GAU(nn.Module):
 
 
 class PAN(nn.Module):
-    def __init__(self, blocks=[]):
+    def __init__(self, blocks, num_class):
         """
         :param blocks: Blocks of the network with reverse sequential.
         """
         super(PAN, self).__init__()
+        self.num_class = num_class
+
         channels_blocks = []
         for i, block in enumerate(blocks):
             channels_blocks.append(list(list(block.children())[2].children())[4].weight.shape[0])
 
         self.fpa = FPA(channels=channels_blocks[0])
-        # channels_high = channels_blocks[0]
-        # for i, channels_low in enumerate(channels_blocks[1:]):
-        #     self.gau.append(GAU(channels_high, channels_low))
-        #     channels_high = channels_low
-        self.gau_block1 = GAU(channels_blocks[0], channels_blocks[1], upsample=False)
-        self.gau_block2 = GAU(channels_blocks[1], channels_blocks[2])
-        self.gau_block3 = GAU(channels_blocks[2], channels_blocks[3])
+        self.gau_block1 = GAU(channels_high=channels_blocks[0], channels_low=channels_blocks[1], up_sample=False)
+        self.gau_block2 = GAU(channels_high=channels_blocks[1], channels_low=channels_blocks[2])
+        self.gau_block3 = GAU(channels_high=channels_blocks[2], channels_low=channels_blocks[3])
         self.gau = [self.gau_block1, self.gau_block2, self.gau_block3]
 
         self.relu = nn.ReLU(inplace=True)
 
-        # ##自己加的
-        self.conv3 = nn.Conv2d(256, 19, kernel_size=1, stride=1, padding=0)  # cityspace numclass=19
+        # self-motivated
+        self.conv3 = nn.Conv2d(in_channels=256, out_channels=self.num_class, kernel_size=1, stride=1, padding=0)
 
     def forward(self, fms=[]):
         """
@@ -233,23 +215,11 @@ class PAN(nn.Module):
         """
         for i, fm_low in enumerate(fms):
             if i == 0:
-                # print('fm_low shape:{}'.format(fm_low.shape))
                 fm_high = self.fpa(fm_low)
             else:
                 fm_high = self.gau[int(i - 1)](fm_high, fm_low)
-        # ###自己加的
+
+        # self-motivated
         fm_high = self.conv3(fm_high)
+
         return fm_high
-
-
-'''
-class Mask_Classifier(nn.Module):
-    def __init__(self, in_features=256, num_class=20):
-        super(Mask_Classifier, self).__init__()
-        self.mask_conv = nn.Conv2d(in_features, num_class, kernel_size=3, stride=1, padding=1)
-    def forward(self, x):
-        x = self.mask_conv(x)
-        #x = F.softmax(x,dim=1)
-        #x = torch.argmax(x,dim=1).float()
-        return x
-'''
