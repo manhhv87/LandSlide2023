@@ -4,7 +4,7 @@ from torch.autograd import Variable
 import torch.optim as optim
 from networks import PAN, ResNet50
 
-from data import make_data_loader
+from dataset import make_data_loader
 import argparse
 from utils.metrics import Evaluator
 from utils.loss import SegmentationLosses
@@ -36,9 +36,12 @@ def parse_args():
     Parse input arguments
     """
     parser = argparse.ArgumentParser(description='Train a FPN Semantic Segmentation network')
-    parser.add_argument('--dataset', dest='dataset',
-                        help='training dataset',
-                        default='Cityscapes', type=str)
+    parser.add_argument("--data_dir", type=str, default='./data/',
+                        help="dataset path.")
+    parser.add_argument("--train_list", type=str, default='./data/train.txt',
+                        help="training list file.")
+    parser.add_argument("--test_list", type=str, default='./data/train.txt',
+                        help="test list file.")
     parser.add_argument('--net', dest='net',
                         help='resnet101, res152, etc',
                         default='resnet101', type=str)
@@ -55,6 +58,8 @@ def parse_args():
     # cuda
     parser.add_argument('--cuda', dest='cuda',
                         help='whether use CUDA', default=True, type=bool)
+    parser.add_argument("--num_workers", type=int, default=4,
+                        help="number of workers for multithread dataloading.")
     parser.add_argument('--gpu_ids', dest='gpu_ids',
                         help='use which gpu to train, must be a comma-separated list of integers only (defalt=0)',
                         default='0', type=str)
@@ -123,7 +128,7 @@ args = parse_args()
 kwargs = {'num_workers': 0, 'pin_memory': True}
 train_loader, test_loader = make_data_loader(args, **kwargs)
 
-convnet = ResNet50(pretrained=True)
+convnet = ResNet50(pretrained=False)
 pan = PAN(convnet.blocks[::-1])
 
 convnet.to(device)
