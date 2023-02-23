@@ -1,6 +1,7 @@
 import torch.nn as nn
 import math
 import torch.utils.model_zoo as model_zoo
+
 __all__ = ['ResNet', 'resnet50']
 
 model_urls = {
@@ -52,6 +53,7 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
 
         return out
+
 
 class ResNet(nn.Module):
     def __init__(self, block, layers, num_classes=1000):
@@ -129,9 +131,9 @@ class ResNet(nn.Module):
 
         return x
 
+
 def resnet50(pretrained=False, **kwargs):
     """Constructs a ResNet-50 model.
-
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """

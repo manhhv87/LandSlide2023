@@ -1,199 +1,227 @@
-"""
-Author: Jiawei Wang. Guangdong University of Technology.
-This source code is the implementation of Pyramid Attention Network(PAN) for Semantic Segmentation.
-https://arxiv.org/abs/1805.10180
-"""
-
-import argparse
-import logging
-from pathlib import Path
 import numpy as np
-
 import torch
-import torch.nn.functional as F
+from torch.autograd import Variable
 import torch.optim as optim
-from torchvision import transforms
+from networks import PAN, ResNet50
 
-from datasets import Voc2012
-from networks import Classifier, PAN, ResNet50, Mask_Classifier
-from utils import save_model, get_each_cls_iu, PolyLR
-from sklearn.metrics import average_precision_score
-import ss_transforms as tr
+from data import make_data_loader
+import argparse
+from utils.metrics import Evaluator
+from utils.loss import SegmentationLosses
+from torch.nn import functional as F
+from torch.optim.lr_scheduler import _LRScheduler
 
-parser = argparse.ArgumentParser(description='PAN')
-parser.add_argument('--batch_size', type=int, default=4,
-                    help='input batch size for training (default: 4)')
-parser.add_argument('--epochs', type=int, default=100,
-                    help='number of epochs to train (default: 100)')
-parser.add_argument('--lr', type=float, default=4e-3, help='learning rate (default:4e-3)')
-parser.add_argument('--alpha', type=float, default=1,
-                    help='Cls Loss')
-parser.add_argument('--beta', type=float, default=1,
-                    help='Semantic Segmentation loss')
 
-args = parser.parse_args()
+class PolyLR(_LRScheduler):
+    """Set the learning rate of each parameter group to the initial lr decayed
+    by gamma every epoch. When last_epoch=-1, sets initial lr as lr.
+    Args:
+        optimizer (Optimizer): Wrapped optimizer.
+        gamma (float): Multiplicative factor of learning rate decay.
+        last_epoch (int): The index of last epoch. Default: -1.
+    """
 
-experiment_name = 'batch_size{:}a{:}b{:}_div4_512_imgnetnormal'.format(args.batch_size, args.alpha, args.beta)
-path_log = Path('./log/' + experiment_name + '.log')
+    def __init__(self, optimizer, max_iter, power, last_epoch=-1):
+        self.max_iter = max_iter
+        self.power = power
+        super(PolyLR, self).__init__(optimizer, last_epoch)
 
-try:
-    if path_log.exists():
-        raise FileExistsError
-except FileExistsError:
-    print("Already exist log file: {}".format(path_log))
-    raise
-else:
-    logging.basicConfig(level=logging.INFO,
-                                format='%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
-                                datefmt='%a, %d %b %Y %H:%M:%S',
-                                filename=path_log.__str__(),
-                                filemode='w'
-                                )
-    print('Create log file: {}'.format(path_log))
+    def get_lr(self):
+        return [base_lr * (1 - self.last_epoch / self.max_iter) ** self.power
+                for base_lr in self.base_lrs]
 
-train_transforms = transforms.Compose([tr.RandomSized((256, 256)),
-                                       tr.RandomRotate(15),
-                                       tr.RandomHorizontalFlip(),
-                                       tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                                       tr.ToTensor()
-        ])
 
-test_transforms = transforms.Compose([tr.RandomSized((256, 256)),
-                                      tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                                      tr.ToTensor()
-])
+def parse_args():
+    """
+    Parse input arguments
+    """
+    parser = argparse.ArgumentParser(description='Train a FPN Semantic Segmentation network')
+    parser.add_argument('--dataset', dest='dataset',
+                        help='training dataset',
+                        default='Cityscapes', type=str)
+    parser.add_argument('--net', dest='net',
+                        help='resnet101, res152, etc',
+                        default='resnet101', type=str)
+    parser.add_argument('--start_epoch', dest='start_epoch',
+                        help='starting epoch',
+                        default=1, type=int)
+    parser.add_argument('--epochs', dest='epochs',
+                        help='number of iterations to train',
+                        default=50, type=int)
+    parser.add_argument('--save_dir', dest='save_dir',
+                        help='directory to save models',
+                        default=None,
+                        nargs=argparse.REMAINDER)
+    # cuda
+    parser.add_argument('--cuda', dest='cuda',
+                        help='whether use CUDA', default=True, type=bool)
+    parser.add_argument('--gpu_ids', dest='gpu_ids',
+                        help='use which gpu to train, must be a comma-separated list of integers only (defalt=0)',
+                        default='0', type=str)
+    # batch size
+    parser.add_argument('--batch_size', dest='batch_size',
+                        help='batch_size',
+                        default=4, type=int)
 
-training_data = Voc2012('/home/tom/DISK/DISK2/jian/PASCAL/VOC2012', 'train_aug',transform=train_transforms)
-test_data = Voc2012('/home/tom/DISK/DISK2/jian/PASCAL/VOC2012', 'val',transform=test_transforms)
-training_loader = torch.utils.data.DataLoader(training_data, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
+    # config optimization
+    parser.add_argument('--o', dest='optimizer',
+                        help='training optimizer',
+                        default='sgd', type=str)
+    parser.add_argument('--lr', dest='lr',
+                        help='starting learning rate',
+                        default=0.01, type=float)
+    parser.add_argument('--weight_decay', dest='weight_decay',
+                        help='weight_decay',
+                        default=1e-5, type=float)
+    parser.add_argument('--lr_decay_step', dest='lr_decay_step',
+                        help='step to do learning rate decay, uint is epoch',
+                        default=50, type=int)
+    parser.add_argument('--lr_decay_gamma', dest='lr_decay_gamma',
+                        help='learning rate decay ratio',
+                        default=0.1, type=float)
 
-test_loader = torch.utils.data.DataLoader(test_data, batch_size=1, shuffle=False, num_workers=1, pin_memory=False)
+    # set training session
+    parser.add_argument('--s', dest='session',
+                        help='training session',
+                        default=1, type=int)
 
-length_training_dataset = len(training_data)
-length_test_dataset = len(test_data)
+    parser.add_argument('--checksession', dest='checksession',
+                        help='checksession to load model',
+                        default=1, type=int)
+    parser.add_argument('--checkepoch', dest='checkepoch',
+                        help='checkepoch to load model',
+                        default=1, type=int)
+    parser.add_argument('--checkpoint', dest='checkpoint',
+                        help='checkpoint to load model',
+                        default=0, type=int)
 
-NUM_CLASS = 20
+    # configure validation
+    parser.add_argument('--no_val', dest='no_val',
+                        help='not do validation',
+                        default=False, type=bool)
+    parser.add_argument('--eval_interval', dest='eval_interval',
+                        help='iterval to do evaluate',
+                        default=1, type=int)
 
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    parser.add_argument('--checkname', dest='checkname',
+                        help='checkname',
+                        default=None, type=str)
+
+    parser.add_argument('--base-size', type=int, default=1024,
+                        help='base image size')
+    parser.add_argument('--crop-size', type=int, default=512,
+                        help='crop image size')
+
+    args = parser.parse_args()
+    return args
+
+
+NUM_CLASS = 2
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print('device:{}'.format(device))
+args = parse_args()
+kwargs = {'num_workers': 0, 'pin_memory': True}
+train_loader, test_loader = make_data_loader(args, **kwargs)
 
 convnet = ResNet50(pretrained=True)
-classifier = Classifier(in_features=2048, num_class=NUM_CLASS)
 pan = PAN(convnet.blocks[::-1])
-mask_classifier = Mask_Classifier(in_features=256, num_class=(NUM_CLASS+1))
 
 convnet.to(device)
-classifier.to(device)
 pan.to(device)
-mask_classifier.to(device)
 
-def train(epoch, optimizer, data_loader):
+weight = None
+criterion = SegmentationLosses(weight=weight, cuda=args.cuda).build_loss(mode='ce')
+
+model_name = ['convnet', 'pan']
+optimizer = {'convnet': optim.SGD(convnet.parameters(), lr=args.lr, weight_decay=1e-4),
+             'pan': optim.SGD(pan.parameters(), lr=args.lr, weight_decay=1e-4)}
+
+optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
+                          'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9)}
+
+evaluator = Evaluator(NUM_CLASS)
+
+
+def train(epoch, optimizer, train_loader):
     convnet.train()
-    classifier.train()
     pan.train()
-    y_true = []
-    y_pred = []
-    pixel_acc = 0
-    for batch_idx, (imgs, cls_labels, mask_labels) in enumerate(data_loader):
-        imgs, cls_labels, mask_labels = imgs.to(device), cls_labels.to(device), mask_labels.to(device)
-        fms_blob, z = convnet(imgs)
-        out_cls = classifier(z.detach())
+    for iteration, batch in enumerate(train_loader):
+        image, target, _, _ = batch
+        inputs = image.to(device)
+        labels = target.to(device)
 
-        # Classification Loss
-        out_ss = pan(fms_blob[::-1])
-        loss_cls = F.binary_cross_entropy_with_logits(out_cls, cls_labels)
-
-        # Semantic Segmentation Loss
-        mask_pred = mask_classifier(out_ss)
-        mask_labels = F.interpolate(mask_labels, scale_factor=0.25, mode='nearest')
-        loss_ss = F.cross_entropy(mask_pred, mask_labels.long().squeeze(1))
-
-        # results
-        y_true.append(cls_labels.data.cpu().numpy())
-        y_pred.append(torch.sigmoid(out_cls).data.cpu().numpy())
-
-        # Update model
-        model_name = [convnet, classifier, pan, mask_classifier]
+        # grad = 0
+        model_name = [convnet, pan]
         for m in model_name:
             m.zero_grad()
-        (args.alpha*loss_cls + args.beta*loss_ss).backward()
-        model_name = ['convnet', 'classifier', 'pan', 'mask_classifier']
+
+        inputs = Variable(inputs)
+        labels = Variable(labels)
+        fms_blob, z = convnet(inputs)  # feature map,out
+        out_ss = pan(fms_blob[::-1])
+
+        out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
+
+        loss_ss = criterion(out_ss, labels.long())
+        print('loss={}'.format(loss_ss))
+        loss_ss.backward(torch.ones_like(loss_ss))
+        model_name = ['convnet', 'pan']
         for m in model_name:
             optimizer[m].step()
 
-        # Result
-        pixel_acc += mask_pred.max(dim=1)[1].data.cpu().eq(mask_labels.squeeze(1).cpu()).float().mean()
+        if iteration % 10 == 0:
+            print("Epoch[{}]({}/{}):Loss:{:.4f}".format(epoch, iteration, len(train_loader),
+                                                        loss_ss.data))
 
-        if (batch_idx+1) % 64 == 0:
-            acc = average_precision_score(np.concatenate(y_true, 0), np.concatenate(y_pred, 0))
-            logging.info(
-                "Train Epoch:{:}, {:}/{:}, loss_cls:{:.4f}, cls_acc:{:.4f}%, pixel_acc:{:.4f}%".format(
-                    epoch, args.batch_size*batch_idx, length_training_dataset, loss_cls, acc * 100, pixel_acc/batch_idx*100))
 
-def test(data_loader):
-    global best_acc
+def validation(epoch, best_pred):
     convnet.eval()
     pan.eval()
-    all_i_count = []
-    all_u_count = []
-    y_true = []
-    y_pred = []
-    pixel_acc = 0
-
-    for batch_idx, (imgs, cls_labels, mask_labels) in enumerate(data_loader):
+    evaluator.reset()
+    test_loss = 0.0
+    for iteration, batch in enumerate(test_loader):
+        image, target, _, _ = batch
+        image = image.to(device)
+        target = target.to(device)
         with torch.no_grad():
-            imgs, cls_labels = imgs.to(device), cls_labels.to(device)
-            fms_blob, z = convnet(imgs)
-            out_cls = classifier(z)
+            fms_blob, z = convnet(image)
             out_ss = pan(fms_blob[::-1])
-            mask_pred = mask_classifier(out_ss)
+        out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
+        loss_ss = criterion(out_ss, target.long())
+        loss = loss_ss.item()
+        test_loss += loss
+        print('epoch:{},test loss:{}'.format(epoch, test_loss / (iteration + 1)))
 
-        # results
-        y_pred.append(torch.sigmoid(out_cls).data.cpu().numpy())
-        y_true.append(cls_labels.data.cpu().numpy())
-        mask_labels = F.interpolate(mask_labels, scale_factor=0.25, mode='nearest')
-        i_count, u_count = get_each_cls_iu(mask_pred.max(1)[1].cpu().data.numpy(), mask_labels.squeeze(1).numpy())
+        pred = out_ss.data.cpu().numpy()
+        target = target.cpu().numpy()
+        pred = np.argmax(pred, axis=1)
+        evaluator.add_batch(target, pred)
 
-        all_i_count.append(i_count)
-        all_u_count.append(u_count)
-        pixel_acc += mask_pred.max(dim=1)[1].data.cpu().eq(mask_labels.cpu().squeeze(1).long()).float().mean().item()
+    # Fast test during the training
+    Acc = evaluator.Pixel_Accuracy()
+    Acc_class = evaluator.Pixel_Accuracy_Class()
+    mIoU = evaluator.Mean_Intersection_over_Union()
+    FWIoU = evaluator.Frequency_Weighted_Intersection_over_Union()
 
-    # Result
-    acc = average_precision_score(np.concatenate(y_true, 0), np.concatenate(y_pred, 0))
-    each_cls_IOU = (np.array(all_i_count).sum(0) / np.array(all_u_count).sum(0))
-    mIOU = each_cls_IOU.mean()
-    pixel_acc = pixel_acc / length_test_dataset
+    print('Validation:')
+    print('[Epoch: %d, numImages: %5d]' % (epoch, iteration * args.batch_size + image.shape[0]))
+    print("Acc:{:.5f}, Acc_class:{:.5f}, mIoU:{:.5f}, fwIoU:{:.5f}".format(Acc, Acc_class, mIoU, FWIoU))
+    print('Loss: %.3f' % test_loss)
 
-    logging.info("Length of test set:{:} Test Cls Acc:{:.4f}% Each_cls_IOU:{:} mIOU:{:.4f} PA:{:.4f}".format(length_test_dataset, acc*100, dict(zip(test_data.classes, (100*each_cls_IOU).tolist())), mIOU*100, pixel_acc))
+    new_pred = mIoU
+    if new_pred > best_pred:
+        print('(mIoU)new pred ={},old best pred={}'.format(new_pred, best_pred))
+        best_pred = new_pred
+        torch.save(convnet, './convnet.pth')
+        torch.save(pan, './pan.pth')
+    return best_pred
 
-    if mIOU > best_acc:
-        logging.info('==>Save model, best mIOU:{:.3f}%'.format(mIOU*100))
-        best_acc = mIOU
-        state = {'epoch': epoch,
-                 'best_acc': best_acc,
-                 'convnet': convnet.state_dict(),
-                 'pan': pan.state_dict(),
-                 'classifier': classifier.state_dict(),
-                 'mask_classifier': mask_classifier.state_dict(),
-                 'optimizer': optimizer,
-                 }
-        save_model(state, directory='./checkpoints', filename=experiment_name+'.pkl')
 
-model_name = ['convnet', 'classifier', 'pan', 'mask_classifier']
-optimizer = {'convnet': optim.SGD(convnet.parameters(), lr=args.lr, weight_decay=1e-4),
-             'classifier': optim.SGD(classifier.parameters(), lr=args.lr, weight_decay=1e-4),
-             'pan': optim.SGD(pan.parameters(), lr=args.lr, weight_decay=1e-4),
-             'mask_classifier': optim.SGD(mask_classifier.parameters(), lr=args.lr, weight_decay=1e-4)}
-
-optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
-                          'classifier': PolyLR(optimizer['classifier'], max_iter=args.epochs, power=0.9),
-                          'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9),
-                          'mask_classifier': PolyLR(optimizer['mask_classifier'], max_iter=args.epochs, power=0.9)}
-
-best_acc = 0
+best_pred = 0.0
 for epoch in range(args.epochs):
     for m in model_name:
         optimizer_lr_scheduler[m].step(epoch)
-    logging.info('Epoch:{:}'.format(epoch))
-    train(epoch, optimizer, training_loader)
-    if epoch % 1 == 0:
-        test(test_loader)
+    print('Epoch:{}'.format(epoch))
+    train(epoch, optimizer, train_loader)
+    if epoch % (5 - 1) == 0:
+        best_pred = validation(epoch, best_pred)

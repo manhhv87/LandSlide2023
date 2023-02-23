@@ -1,5 +1,8 @@
 import torch.nn as nn
+import torch
 import resnet
+from torch.nn import functional as F
+
 
 class ResNet50(nn.Module):
     def __init__(self, pretrained=True):
@@ -28,15 +31,16 @@ class ResNet50(nn.Module):
 
         return feature_map, out
 
-class Classifier(nn.Module):
-    def __init__(self, in_features=2048, num_class=20):
-        super(Classifier, self).__init__()
-        self.fc1 = nn.Linear(in_features, num_class)
-        self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x):
-        x = self.fc1(x)
-        return x
+# class Classifier(nn.Module):
+#     def __init__(self, in_features=2048, num_class=20):
+#         super(Classifier, self).__init__()
+#         self.fc1 = nn.Linear(in_features, num_class)
+#         self.relu = nn.ReLU(inplace=True)
+#
+#     def forward(self, x):
+#         x = self.fc1(x)
+#         return x
 
 class FPA(nn.Module):
     def __init__(self, channels=2048):
@@ -45,41 +49,50 @@ class FPA(nn.Module):
         :type channels: int
         """
         super(FPA, self).__init__()
-        channels_mid = int(channels/4)
+        channels_mid = int(channels / 4)
 
         self.channels_cond = channels
 
         # Master branch
-        self.conv_master = nn.Conv2d(self.channels_cond, channels, kernel_size=1, bias=False)
+        self.conv_master = nn.Conv2d(self.channels_cond, channels, kernel_size=1, bias=False)  # 2048,2048
         self.bn_master = nn.BatchNorm2d(channels)
 
         # Global pooling branch
-        self.conv_gpb = nn.Conv2d(self.channels_cond, channels, kernel_size=1, bias=False)
+        self.conv_gpb = nn.Conv2d(self.channels_cond, channels, kernel_size=1, bias=False)  # 2048,2048
         self.bn_gpb = nn.BatchNorm2d(channels)
 
         # C333 because of the shape of last feature maps is (16, 16).
-        self.conv7x7_1 = nn.Conv2d(self.channels_cond, channels_mid, kernel_size=(7, 7), stride=2, padding=3, bias=False)
+        self.conv7x7_1 = nn.Conv2d(self.channels_cond, channels_mid, kernel_size=(7, 7), stride=2, padding=3,
+                                   bias=False)  # 2048,512
         self.bn1_1 = nn.BatchNorm2d(channels_mid)
-        self.conv5x5_1 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(5, 5), stride=2, padding=2, bias=False)
+        self.conv5x5_1 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(5, 5), stride=2, padding=2,
+                                   bias=False)  # 512,512
         self.bn2_1 = nn.BatchNorm2d(channels_mid)
-        self.conv3x3_1 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(3, 3), stride=2, padding=1, bias=False)
+        self.conv3x3_1 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(3, 3), stride=2, padding=1,
+                                   bias=False)  # 512,512
         self.bn3_1 = nn.BatchNorm2d(channels_mid)
 
-        self.conv7x7_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(7, 7), stride=1, padding=3, bias=False)
+        self.conv7x7_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(7, 7), stride=1, padding=3,
+                                   bias=False)  # 512,512
         self.bn1_2 = nn.BatchNorm2d(channels_mid)
-        self.conv5x5_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(5, 5), stride=1, padding=2, bias=False)
+        self.conv5x5_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(5, 5), stride=1, padding=2,
+                                   bias=False)  # 512,512
         self.bn2_2 = nn.BatchNorm2d(channels_mid)
-        self.conv3x3_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(3, 3), stride=1, padding=1, bias=False)
+        self.conv3x3_2 = nn.Conv2d(channels_mid, channels_mid, kernel_size=(3, 3), stride=1, padding=1,
+                                   bias=False)  # 512,512
         self.bn3_2 = nn.BatchNorm2d(channels_mid)
 
         # Convolution Upsample
-        self.conv_upsample_3 = nn.ConvTranspose2d(channels_mid, channels_mid, kernel_size=4, stride=2, padding=1, bias=False)
+        self.conv_upsample_3 = nn.ConvTranspose2d(channels_mid, channels_mid, kernel_size=4, stride=2, padding=1,
+                                                  bias=False)
         self.bn_upsample_3 = nn.BatchNorm2d(channels_mid)
 
-        self.conv_upsample_2 = nn.ConvTranspose2d(channels_mid, channels_mid, kernel_size=4, stride=2, padding=1, bias=False)
+        self.conv_upsample_2 = nn.ConvTranspose2d(channels_mid, channels_mid, kernel_size=4, stride=2, padding=1,
+                                                  bias=False)
         self.bn_upsample_2 = nn.BatchNorm2d(channels_mid)
 
-        self.conv_upsample_1 = nn.ConvTranspose2d(channels_mid, channels, kernel_size=4, stride=2, padding=1, bias=False)
+        self.conv_upsample_1 = nn.ConvTranspose2d(channels_mid, channels, kernel_size=4, stride=2, padding=1,
+                                                  bias=False)
         self.bn_upsample_1 = nn.BatchNorm2d(channels)
 
         self.relu = nn.ReLU(inplace=True)
@@ -126,11 +139,12 @@ class FPA(nn.Module):
         x1_merge = self.relu(x1_2 + x2_upsample)
 
         x_master = x_master * self.relu(self.bn_upsample_1(self.conv_upsample_1(x1_merge)))
-
-        #
+        ###????????????????????????????????????????? x_master + x_gdb???????
+        # print('x_master:{},x_gpb:{}'.format(x_master.shape,x_gpb.shape))
         out = self.relu(x_master + x_gpb)
 
         return out
+
 
 class GAU(nn.Module):
     def __init__(self, channels_high, channels_low, upsample=True):
@@ -144,7 +158,8 @@ class GAU(nn.Module):
         self.bn_high = nn.BatchNorm2d(channels_low)
 
         if upsample:
-            self.conv_upsample = nn.ConvTranspose2d(channels_high, channels_low, kernel_size=4, stride=2, padding=1, bias=False)
+            self.conv_upsample = nn.ConvTranspose2d(channels_high, channels_low, kernel_size=4, stride=2, padding=1,
+                                                    bias=False)
             self.bn_upsample = nn.BatchNorm2d(channels_low)
         else:
             self.conv_reduction = nn.Conv2d(channels_high, channels_low, kernel_size=1, padding=0, bias=False)
@@ -171,8 +186,11 @@ class GAU(nn.Module):
         # fms_low_mask = torch.cat([fms_low, fm_mask], dim=1)
         fms_low_mask = self.conv3x3(fms_low)
         fms_low_mask = self.bn_low(fms_low_mask)
-
+        # ?????????可以直接相乘？？？
+        # print('fms_low_mask :{}'.format(fms_low_mask.shape))
+        # print('fms_high_gp :{}'.format(fms_high_gp.shape))
         fms_att = fms_low_mask * fms_high_gp
+        # print('fms_att:{}'.format(fms_att.shape))
         if self.upsample:
             out = self.relu(
                 self.bn_upsample(self.conv_upsample(fms_high)) + fms_att)
@@ -181,6 +199,7 @@ class GAU(nn.Module):
                 self.bn_reduction(self.conv_reduction(fms_high)) + fms_att)
 
         return out
+
 
 class PAN(nn.Module):
     def __init__(self, blocks=[]):
@@ -204,6 +223,9 @@ class PAN(nn.Module):
 
         self.relu = nn.ReLU(inplace=True)
 
+        # ##自己加的
+        self.conv3 = nn.Conv2d(256, 19, kernel_size=1, stride=1, padding=0)  # cityspace numclass=19
+
     def forward(self, fms=[]):
         """
         :param fms: Feature maps of forward propagation in the network with reverse sequential. shape:[b, c, h, w]
@@ -211,17 +233,23 @@ class PAN(nn.Module):
         """
         for i, fm_low in enumerate(fms):
             if i == 0:
+                # print('fm_low shape:{}'.format(fm_low.shape))
                 fm_high = self.fpa(fm_low)
             else:
-                fm_high = self.gau[int(i-1)](fm_high, fm_low)
-
+                fm_high = self.gau[int(i - 1)](fm_high, fm_low)
+        # ###自己加的
+        fm_high = self.conv3(fm_high)
         return fm_high
 
+
+'''
 class Mask_Classifier(nn.Module):
-    def __init__(self, in_features=256, num_class=21):
+    def __init__(self, in_features=256, num_class=20):
         super(Mask_Classifier, self).__init__()
         self.mask_conv = nn.Conv2d(in_features, num_class, kernel_size=3, stride=1, padding=1)
-
     def forward(self, x):
         x = self.mask_conv(x)
+        #x = F.softmax(x,dim=1)
+        #x = torch.argmax(x,dim=1).float()
         return x
+'''
