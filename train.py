@@ -6,10 +6,11 @@ from networks import PAN, ResNet50
 
 from dataset import make_data_loader
 import argparse
-from utils.metrics import Evaluator
+from utils.metrics import *
 from utils.loss import SegmentationLosses
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import _LRScheduler
+from collections import OrderedDict
 
 
 class PolyLR(_LRScheduler):
@@ -32,30 +33,25 @@ class PolyLR(_LRScheduler):
 
 
 def parse_args():
+    """Parse all the arguments provided from the CLI.
+
+        Returns:
+          A list of parsed arguments.
     """
-    Parse input arguments
-    """
-    parser = argparse.ArgumentParser(description='Train a FPN Semantic Segmentation network')
+
+    parser = argparse.ArgumentParser(description='Train a Pyramid Attention Networks for Land4Seen')
+
     parser.add_argument("--data_dir", type=str, default='./data/',
                         help="dataset path.")
     parser.add_argument("--train_list", type=str, default='./data/train.txt',
                         help="training list file.")
     parser.add_argument("--test_list", type=str, default='./data/train.txt',
                         help="test list file.")
-    parser.add_argument('--net', dest='net',
-                        help='resnet101, res152, etc',
-                        default='resnet101', type=str)
-    parser.add_argument('--start_epoch', dest='start_epoch',
-                        help='starting epoch',
-                        default=1, type=int)
+
     parser.add_argument('--epochs', dest='epochs',
                         help='number of iterations to train',
                         default=50, type=int)
-    parser.add_argument('--save_dir', dest='save_dir',
-                        help='directory to save models',
-                        default=None,
-                        nargs=argparse.REMAINDER)
-    # cuda
+
     parser.add_argument('--cuda', dest='cuda',
                         help='whether use CUDA', default=True, type=bool)
     parser.add_argument("--num_workers", type=int, default=4,
@@ -63,15 +59,10 @@ def parse_args():
     parser.add_argument('--gpu_ids', dest='gpu_ids',
                         help='use which gpu to train, must be a comma-separated list of integers only (defalt=0)',
                         default='0', type=str)
-    # batch size
-    parser.add_argument('--batch_size', dest='batch_size',
-                        help='batch_size',
-                        default=4, type=int)
 
-    # config optimization
-    parser.add_argument('--o', dest='optimizer',
-                        help='training optimizer',
-                        default='sgd', type=str)
+    parser.add_argument('--batch_size', dest='batch_size', default=32, type=int,
+                        help='batch_size')
+
     parser.add_argument('--lr', dest='lr',
                         help='starting learning rate',
                         default=0.01, type=float)
@@ -84,38 +75,6 @@ def parse_args():
     parser.add_argument('--lr_decay_gamma', dest='lr_decay_gamma',
                         help='learning rate decay ratio',
                         default=0.1, type=float)
-
-    # set training session
-    parser.add_argument('--s', dest='session',
-                        help='training session',
-                        default=1, type=int)
-
-    parser.add_argument('--checksession', dest='checksession',
-                        help='checksession to load model',
-                        default=1, type=int)
-    parser.add_argument('--checkepoch', dest='checkepoch',
-                        help='checkepoch to load model',
-                        default=1, type=int)
-    parser.add_argument('--checkpoint', dest='checkpoint',
-                        help='checkpoint to load model',
-                        default=0, type=int)
-
-    # configure validation
-    parser.add_argument('--no_val', dest='no_val',
-                        help='not do validation',
-                        default=False, type=bool)
-    parser.add_argument('--eval_interval', dest='eval_interval',
-                        help='iterval to do evaluate',
-                        default=1, type=int)
-
-    parser.add_argument('--checkname', dest='checkname',
-                        help='checkname',
-                        default=None, type=str)
-
-    parser.add_argument('--base-size', type=int, default=1024,
-                        help='base image size')
-    parser.add_argument('--crop-size', type=int, default=512,
-                        help='crop image size')
 
     return parser.parse_args()
 
@@ -133,8 +92,7 @@ pan = PAN(blocks=convnet.blocks[::-1], num_class=NUM_CLASS)
 convnet.to(device)
 pan.to(device)
 
-weight = None
-criterion = SegmentationLosses(weight=weight, cuda=args.cuda).build_loss(mode='ce')
+criterion = SegmentationLosses(weight=None, cuda=args.cuda).build_loss(mode='ce')
 
 model_name = ['convnet', 'pan']
 optimizer = {'convnet': optim.Adam(convnet.parameters(), lr=args.lr, weight_decay=1e-4),
@@ -147,35 +105,62 @@ evaluator = Evaluator(NUM_CLASS)
 
 
 def train(epoch, optimizer, train_loader):
+    losses = AverageMeter()
+    scores = AverageMeter()
+    running_loss = 0.0
+    running_corrects = 0.0
+
+    # modules.train() tells your modules that you are training the modules. This helps inform layers such as Dropout
+    # and BatchNorm, which are designed to behave differently during training and evaluation. For instance,
+    # in training mode, BatchNorm updates a moving average on each new batch;
+    # whereas, for evaluation mode, these updates are frozen.
     convnet.train()
     pan.train()
+
     for iteration, batch in enumerate(train_loader):
         image, target, _, _ = batch
         inputs = image.to(device)
         labels = target.to(device)
 
-        # grad = 0
-        model_name = [convnet, pan]
-        for m in model_name:
-            m.zero_grad()
+        for md in [convnet, pan]:
+            md.zero_grad()
 
         inputs = Variable(inputs)
         labels = Variable(labels)
-        fms_blob, z = convnet(inputs)  # feature map,out
-        out_ss = pan(fms_blob[::-1])
 
+        fms_blob, z = convnet(inputs)  # feature map, out
+        out_ss = pan(fms_blob[::-1])
         out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
 
         loss_ss = criterion(out_ss, labels.long())
-        print('loss={}'.format(loss_ss))
-        loss_ss.backward(torch.ones_like(loss_ss))
-        model_name = ['convnet', 'pan']
-        for m in model_name:
-            optimizer[m].step()
+        acc_ss = accuracy(out_ss, labels.long())
 
-        if iteration % 10 == 0:
-            print("Epoch[{}]({}/{}):Loss:{:.4f}".format(epoch, iteration, len(train_loader),
-                                                        loss_ss.data))
+        losses.update(loss_ss.item(), args.batch_size)
+        scores.update(acc_ss.item(), args.batch_size)
+
+        loss_ss.backward(torch.ones_like(loss_ss))
+        for md in ['convnet', 'pan']:
+            optimizer[md].step()
+
+        # statistics
+        running_loss += loss_ss.item()
+        running_corrects += acc_ss.item()
+
+        # if iteration % 10 == 0:
+        #     print("Epoch[{}]({}/{}):Loss:{:.4f}".format(epoch, iteration, len(train_loader),
+        #                                                 loss_ss.data))
+
+    epoch_loss = running_loss / len(train_loader)
+    epoch_acc = running_corrects / len(train_loader)
+
+    log = OrderedDict([
+        ('loss', losses.avg),
+        ('acc', scores.avg),
+        ('epoch_loss', epoch_loss),
+        ('epoch_acc', epoch_acc),
+    ])
+
+    return log
 
 
 def validation(epoch, best_pred):
@@ -221,11 +206,22 @@ def validation(epoch, best_pred):
     return best_pred
 
 
+y_loss = {'train': [], 'val': []}
+y_err = {'train': [], 'val': []}
+
 best_pred = 0.0
 for epoch in range(args.epochs):
     for m in model_name:
         optimizer_lr_scheduler[m].step(epoch)
     print('Epoch:{}'.format(epoch))
-    train(epoch, optimizer, train_loader)
+    train_log = train(epoch, optimizer, train_loader)
+
+    y_loss['train'].append(train_log['epoch_loss'])
+    y_err['train'].append(1.0 - train_log['epoch_acc'])
+
+    # Reports the loss for each epoch
+    print('Epoch %d/%d - loss %.4f - acc %.4f' %
+          (epoch + 1, args.epochs, train_log['loss'], train_log['acc']))
+
     if epoch % (5 - 1) == 0:
         best_pred = validation(epoch, best_pred)
