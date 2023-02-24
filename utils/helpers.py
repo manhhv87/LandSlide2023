@@ -354,7 +354,7 @@ def get_train_list(fold):
         all_train_files.append(image)
 
     # Create train.txt
-    with open("dataset/train.txt", "w") as f:
+    with open("data/train.txt", "w") as f:
         for idx in np.arange(len(all_train_files)):
             f.write(all_train_files[idx] + '\n')
 
@@ -372,7 +372,7 @@ def get_test_list(fold):
         all_test_files.append(image)
 
     # Create Test.txt
-    with open("dataset/test.txt", "w") as f:
+    with open("data/test.txt", "w") as f:
         for idx in np.arange(len(all_test_files)):
             f.write(all_test_files[idx] + '\n')
 
