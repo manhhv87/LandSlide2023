@@ -126,10 +126,8 @@ def validate(args, test_loader, convnet, pan, evaluator, device, criterion):
     convnet.eval()
     pan.eval()
     evaluator.reset()
-    test_loss = 0.0
 
     losses = AverageMeter()
-    scores = AverageMeter()
     running_loss = 0.0
     running_corrects = 0.0
 
@@ -146,10 +144,7 @@ def validate(args, test_loader, convnet, pan, evaluator, device, criterion):
         loss_ss = criterion(out_ss, target.long())
         acc_ss = accuracy(out_ss, target.long())
 
-        # loss = loss_ss.item()
-        # test_loss += loss
         losses.update(loss_ss.item(), args.batch_size)
-        scores.update(acc_ss.item(), args.batch_size)
 
         # statistics
         running_loss += loss_ss.item()
@@ -169,15 +164,8 @@ def validate(args, test_loader, convnet, pan, evaluator, device, criterion):
     mIoU = evaluator.Mean_Intersection_over_Union()
     FWIoU = evaluator.Frequency_Weighted_Intersection_over_Union()
 
-    # new_pred = mIoU
-    # if new_pred > best_pred:
-    #     best_pred = new_pred
-    #     torch.save(convnet, './convnet.pth')
-    #     torch.save(pan, './pan.pth')
-
     return OrderedDict([
         ('loss', losses.avg),
-        ('acc', scores.avg),
         ('acc_pixel', acc),
         ('acc_class', acc_class),
         ('mIoU', mIoU),
@@ -192,7 +180,6 @@ def main():
     args = parse_args()
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print('device:{}'.format(device))
 
     train_loader, test_loader = make_data_loader(args, num_workers=args.num_workers, pin_memory=True)
 
@@ -240,9 +227,9 @@ def main():
         # Reports the loss for each epoch
         print(
             'Epoch %d/%d - %.2fs - loss %.4f - acc %.4f - val_loss %.4f - val_acc %.4f '
-            '- acc_pixel %.4f - acc_class %.4f - mIoU %.4f - FWIoU %.4f' %
-            (epoch + 1, args.epochs, epoch_time, train_log['loss'], train_log['acc'], val_log['loss'],
-             val_log['acc'], val_log['acc_pixel'], val_log['acc_class'], val_log['mIoU'], val_log['FWIoU']))
+            '- acc_class %.4f - mIoU %.4f - FWIoU %.4f' % (
+                epoch + 1, args.epochs, epoch_time, train_log['loss'], train_log['acc'], val_log['loss'],
+                val_log['acc_pixel'], val_log['acc_class'], val_log['mIoU'], val_log['FWIoU']))
 
 
 if __name__ == '__main__':
