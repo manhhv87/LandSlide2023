@@ -236,7 +236,7 @@ def main():
         train_per_epoch = round(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
 
         for epoch in range(args.epochs):
-            kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=8, always_stateful=False)
+            kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=25, always_stateful=False)
 
             train_log = train(args=args, kbar=kbar, train_loader=train_loader, convnet=convnet_, pan=pan_,
                               device=device, optimizer=optimizer, criterion=criterion)
