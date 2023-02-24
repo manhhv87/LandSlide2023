@@ -247,7 +247,7 @@ def main():
             torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
             torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
         else:
-            print('\nEpoch %5d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
+            print('\nEpoch %d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
 
 
 if __name__ == '__main__':
