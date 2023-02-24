@@ -237,16 +237,17 @@ def main():
         y_err['train'].append(1.0 - train_log['epoch_acc'])
         y_err['val'].append(1.0 - val_log['epoch_acc'])
 
-        draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch, x_epoch=x_epoch, y_loss=y_loss, y_err=y_err,
+        draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch + 1, x_epoch=x_epoch, y_loss=y_loss, y_err=y_err,
                    fig=fig, ax0=ax0, ax1=ax1)
 
         if val_log['mIoU'] > best_pred:
+            print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
+            epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
             best_pred = val_log['mIoU']
-            # torch.save(convnet, './convnet.pth')
-            # torch.save(pan, './pan.pth')
-
             torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
             torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
+        else:
+            print('\nEpoch %5d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
 
 
 if __name__ == '__main__':
