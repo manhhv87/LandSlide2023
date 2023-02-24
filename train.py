@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 import numpy as np
 import torch
@@ -7,16 +8,21 @@ import torch.optim as optim
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import _LRScheduler
 from collections import OrderedDict
-from tqdm import tqdm
-from time import sleep
+import matplotlib.pyplot as plt
 
-from utils.metrics import *
+from utils.metrics import Evaluator, AverageMeter, accuracy
 from utils.loss import SegmentationLosses
 from dataset import make_data_loader
 from networks import PAN, ResNet50
+from utils.helpers import get_size_dataset, draw_curve, Kbar
 
 y_loss = {'train': [], 'val': []}
 y_err = {'train': [], 'val': []}
+
+x_epoch = []
+fig = plt.figure(figsize=(12, 5))
+ax0 = fig.add_subplot(121, title="loss")
+ax1 = fig.add_subplot(122, title="top1err")
 
 
 class PolyLR(_LRScheduler):
@@ -67,11 +73,13 @@ def parse_args():
                         help='whether use CUDA')
     parser.add_argument("--num_workers", type=int, default=0,
                         help="number of workers for multithread data-loading")
+    parser.add_argument("--snapshot_dir", type=str, default='./exp/',
+                        help="where to save snapshots of the modules.")
 
     return parser.parse_args()
 
 
-def train(args, epoch, train_loader, convnet, pan, device, optimizer, criterion):
+def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion, scheduler):
     losses = AverageMeter()
     scores = AverageMeter()
     running_loss = 0.0
@@ -84,40 +92,39 @@ def train(args, epoch, train_loader, convnet, pan, device, optimizer, criterion)
     convnet.train()
     pan.train()
 
-    with tqdm(train_loader, unit="batch") as tepoch:
-        for _, batch in enumerate(tepoch):
-            tepoch.set_description(f"Epoch {epoch}")
+    for batch_idx, batch in enumerate(train_loader):
+        image, target, _, _ = batch
+        inputs = image.to(device)
+        labels = target.to(device)
 
-            image, target, _, _ = batch
-            inputs = image.to(device)
-            labels = target.to(device)
+        for md in [convnet, pan]:
+            md.zero_grad()
 
-            for md in [convnet, pan]:
-                md.zero_grad()
+        inputs = Variable(inputs)
+        labels = Variable(labels)
 
-            inputs = Variable(inputs)
-            labels = Variable(labels)
+        fms_blob, z = convnet(inputs)  # feature map, out
+        out_ss = pan(fms_blob[::-1])
+        out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
 
-            fms_blob, z = convnet(inputs)  # feature map, out
-            out_ss = pan(fms_blob[::-1])
-            out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
+        loss_ss = criterion(out_ss, labels.long())
+        acc_ss = accuracy(out_ss, labels.long())
 
-            loss_ss = criterion(out_ss, labels.long())
-            acc_ss = accuracy(out_ss, labels.long())
+        losses.update(loss_ss.item(), args.batch_size)
+        scores.update(acc_ss.item(), args.batch_size)
 
-            losses.update(loss_ss.item(), args.batch_size)
-            scores.update(acc_ss.item(), args.batch_size)
+        loss_ss.backward(torch.ones_like(loss_ss))
+        for md in ['convnet', 'pan']:
+            optimizer[md].step()
 
-            loss_ss.backward(torch.ones_like(loss_ss))
-            for md in ['convnet', 'pan']:
-                optimizer[md].step()
+        # statistics
+        running_loss += loss_ss.item()
+        running_corrects += acc_ss.item()
 
-            # statistics
-            running_loss += loss_ss.item()
-            running_corrects += acc_ss.item()
+        kbar.update(batch_idx, values=[("loss", loss_ss.item()), ("acc", 100. * scores.avg)])
 
-            tepoch.set_postfix(loss=loss_ss.item(), accuracy=100. * scores.avg)
-            sleep(0.1)
+    for md in ['convnet', 'pan']:
+        scheduler[md].step()
 
     epoch_loss = running_loss / len(train_loader)
     epoch_acc = running_corrects / len(train_loader)
@@ -187,6 +194,9 @@ def main():
     """Create the modules and start the training."""
     args = parse_args()
 
+    if not os.path.exists(args.snapshot_dir):
+        os.makedirs(args.snapshot_dir)
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     train_loader, test_loader = make_data_loader(args, num_workers=args.num_workers, pin_memory=True)
@@ -207,37 +217,36 @@ def main():
     evaluator = Evaluator(num_class=args.num_classes)
 
     best_pred = 0.0
+    train_per_epoch = round(get_size_dataset(dataset='train') / args.batch_size)
+
     for epoch in range(args.epochs):
-        tem_time = time.time()
+        kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=8, always_stateful=False)
 
-        for m in ['convnet', 'pan']:
-            optimizer_lr_scheduler[m].step(epoch)
-
-        train_log = train(args=args, epoch=epoch, train_loader=train_loader, convnet=convnet, pan=pan,
-                          device=device, optimizer=optimizer, criterion=criterion)
+        train_log = train(args=args, kbar=kbar, train_loader=train_loader, convnet=convnet, pan=pan,
+                          device=device, optimizer=optimizer, criterion=criterion, scheduler=optimizer_lr_scheduler)
 
         val_log = validate(args=args, test_loader=test_loader, convnet=convnet, pan=pan,
                            evaluator=evaluator, device=device, criterion=criterion)
 
-        # Gather data and report
-        epoch_time = time.time() - tem_time
+        kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
+                            ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
+                            ('FWIoW', val_log['FWIoU'])])
 
         y_loss['train'].append(train_log['epoch_loss'])
         y_loss['val'].append(val_log['epoch_loss'])
         y_err['train'].append(1.0 - train_log['epoch_acc'])
         y_err['val'].append(1.0 - val_log['epoch_acc'])
 
+        draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch, x_epoch=x_epoch, y_loss=y_loss, y_err=y_err,
+                   fig=fig, ax0=ax0, ax1=ax1)
+
         if val_log['mIoU'] > best_pred:
             best_pred = val_log['mIoU']
-            torch.save(convnet, './convnet.pth')
-            torch.save(pan, './pan.pth')
+            # torch.save(convnet, './convnet.pth')
+            # torch.save(pan, './pan.pth')
 
-        # Reports the loss for each epoch
-        print(
-            'Epoch %d/%d - %.2fs - loss %.4f - acc %.4f - val_loss %.4f - val_acc %.4f '
-            '- acc_class %.4f - mIoU %.4f - FWIoU %.4f' % (
-                epoch + 1, args.epochs, epoch_time, train_log['loss'], train_log['acc'], val_log['loss'],
-                val_log['acc_pixel'], val_log['acc_class'], val_log['mIoU'], val_log['FWIoU']))
+            torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
+            torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
 
 
 if __name__ == '__main__':
