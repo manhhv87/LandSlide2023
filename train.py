@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 import numpy as np
+import copy as cp
 import torch
 from torch.autograd import Variable
 import torch.optim as optim
@@ -14,7 +15,7 @@ from utils.metrics import Evaluator, AverageMeter, accuracy
 from utils.loss import SegmentationLosses
 from dataset import make_data_loader
 from networks import PAN, ResNet50
-from utils.helpers import get_size_dataset, draw_curve, Kbar
+from utils.helpers import get_size_dataset, draw_curve, Kbar, split_fold, get_train_test_list
 
 y_loss = {'train': [], 'val': []}
 y_err = {'train': [], 'val': []}
@@ -73,6 +74,8 @@ def parse_args():
                         help='whether use CUDA')
     parser.add_argument("--num_workers", type=int, default=0,
                         help="number of workers for multithread data-loading")
+    parser.add_argument("--k_fold", type=int, default=10,
+                        help="number of fold for k-fold.")
     parser.add_argument("--snapshot_dir", type=str, default='./exp/',
                         help="where to save snapshots of the modules.")
 
@@ -194,60 +197,76 @@ def main():
     """Create the modules and start the training."""
     args = parse_args()
 
-    if not os.path.exists(args.snapshot_dir):
-        os.makedirs(args.snapshot_dir)
-
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    train_loader, test_loader = make_data_loader(args, num_workers=args.num_workers, pin_memory=True)
+    # Splitting k-fold
+    split_fold(num_fold=args.k_fold, test_image_number=int(get_size_dataset('./data/img') / args.k_fold))
 
+    # create modules
     convnet = ResNet50(pretrained=False)
     pan = PAN(blocks=convnet.blocks[::-1], num_class=args.num_classes)
 
-    convnet.to(device)
-    pan.to(device)
+    for fold in range(args.k_fold):
+        print("\nTraining on fold %d" % fold)
 
-    optimizer = {'convnet': optim.Adam(convnet.parameters(), lr=args.lr, weight_decay=args.weight_decay),
-                 'pan': optim.Adam(pan.parameters(), lr=args.lr, weight_decay=args.weight_decay)}
+        # Creating train.txt and test.txt
+        get_train_test_list(fold)
 
-    optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
-                              'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9)}
+        # create snapshots directory
+        snapshot_dir = args.snapshot_dir + "fold" + str(fold)
+        if not os.path.exists(snapshot_dir):
+            os.makedirs(snapshot_dir)
 
-    criterion = SegmentationLosses(weight=None, cuda=args.cuda).build_loss(mode='ce')
-    evaluator = Evaluator(num_class=args.num_classes)
+        # Takes a local copy of the machine learning algorithm (modules) to avoid changing the one passed in
+        convnet_ = cp.deepcopy(convnet)
+        pan_ = cp.deepcopy(pan)
 
-    best_pred = 0.0
-    train_per_epoch = round(get_size_dataset(dataset='train') / args.batch_size)
+        convnet_.to(device)
+        pan_.to(device)
 
-    for epoch in range(args.epochs):
-        kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=8, always_stateful=False)
+        train_loader, test_loader = make_data_loader(args, num_workers=args.num_workers, pin_memory=True)
 
-        train_log = train(args=args, kbar=kbar, train_loader=train_loader, convnet=convnet, pan=pan,
-                          device=device, optimizer=optimizer, criterion=criterion, scheduler=optimizer_lr_scheduler)
+        optimizer = {'convnet': optim.Adam(convnet_.parameters(), lr=args.lr, weight_decay=args.weight_decay),
+                     'pan': optim.Adam(pan_.parameters(), lr=args.lr, weight_decay=args.weight_decay)}
 
-        val_log = validate(args=args, test_loader=test_loader, convnet=convnet, pan=pan,
-                           evaluator=evaluator, device=device, criterion=criterion)
+        optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
+                                  'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9)}
 
-        kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
-                            ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
-                            ('FWIoW', val_log['FWIoU'])])
+        criterion = SegmentationLosses(weight=None, cuda=args.cuda).build_loss(mode='ce')
+        evaluator = Evaluator(num_class=args.num_classes)
 
-        y_loss['train'].append(train_log['epoch_loss'])
-        y_loss['val'].append(val_log['epoch_loss'])
-        y_err['train'].append(1.0 - train_log['epoch_acc'])
-        y_err['val'].append(1.0 - val_log['epoch_acc'])
+        best_pred = 0.0
+        train_per_epoch = round(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
 
-        draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch + 1, x_epoch=x_epoch, y_loss=y_loss, y_err=y_err,
-                   fig=fig, ax0=ax0, ax1=ax1)
+        for epoch in range(args.epochs):
+            kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=8, always_stateful=False)
 
-        if val_log['mIoU'] > best_pred:
-            print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
-            epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
-            best_pred = val_log['mIoU']
-            torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
-            torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
-        else:
-            print('\nEpoch %d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
+            train_log = train(args=args, kbar=kbar, train_loader=train_loader, convnet=convnet_, pan=pan_,
+                              device=device, optimizer=optimizer, criterion=criterion, scheduler=optimizer_lr_scheduler)
+
+            val_log = validate(args=args, test_loader=test_loader, convnet=convnet_, pan=pan_,
+                               evaluator=evaluator, device=device, criterion=criterion)
+
+            kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
+                                ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
+                                ('FWIoW', val_log['FWIoU'])])
+
+            y_loss['train'].append(train_log['epoch_loss'])
+            y_loss['val'].append(val_log['epoch_loss'])
+            y_err['train'].append(1.0 - train_log['epoch_acc'])
+            y_err['val'].append(1.0 - val_log['epoch_acc'])
+
+            draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch + 1, x_epoch=x_epoch, y_loss=y_loss, y_err=y_err,
+                       fig=fig, ax0=ax0, ax1=ax1)
+
+            if val_log['mIoU'] > best_pred:
+                print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
+                    epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
+                best_pred = val_log['mIoU']
+                torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
+                torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
+            else:
+                print('\nEpoch %d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
 
 
 if __name__ == '__main__':
