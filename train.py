@@ -82,7 +82,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion, scheduler):
+def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion):
     losses = AverageMeter()
     scores = AverageMeter()
     running_loss = 0.0
@@ -125,9 +125,6 @@ def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion, 
         running_corrects += acc_ss.item()
 
         kbar.update(batch_idx, values=[("loss", loss_ss.item()), ("acc", 100. * scores.avg)])
-
-    for md in ['convnet', 'pan']:
-        scheduler[md].step()
 
     epoch_loss = running_loss / len(train_loader)
     epoch_acc = running_corrects / len(train_loader)
@@ -242,7 +239,7 @@ def main():
             kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=8, always_stateful=False)
 
             train_log = train(args=args, kbar=kbar, train_loader=train_loader, convnet=convnet_, pan=pan_,
-                              device=device, optimizer=optimizer, criterion=criterion, scheduler=optimizer_lr_scheduler)
+                              device=device, optimizer=optimizer, criterion=criterion)
 
             val_log = validate(args=args, test_loader=test_loader, convnet=convnet_, pan=pan_,
                                evaluator=evaluator, device=device, criterion=criterion)
@@ -250,6 +247,9 @@ def main():
             kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
                                 ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
                                 ('FWIoW', val_log['FWIoU'])])
+
+            for md in ['convnet', 'pan']:
+                optimizer_lr_scheduler[md].step()
 
             y_loss['train'].append(train_log['epoch_loss'])
             y_loss['val'].append(val_log['epoch_loss'])
