@@ -213,7 +213,7 @@ def main():
         for m in ['convnet', 'pan']:
             optimizer_lr_scheduler[m].step(epoch)
 
-        train_log = train(args=args, train_loader=train_loader, convnet=convnet, pan=pan,
+        train_log = train(args=args, epoch=epoch, train_loader=train_loader, convnet=convnet, pan=pan,
                           device=device, optimizer=optimizer, criterion=criterion)
 
         val_log = validate(args=args, test_loader=test_loader, convnet=convnet, pan=pan,
