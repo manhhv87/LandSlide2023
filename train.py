@@ -7,6 +7,8 @@ import torch.optim as optim
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import _LRScheduler
 from collections import OrderedDict
+from tqdm import tqdm
+from time import sleep
 
 from utils.metrics import *
 from utils.loss import SegmentationLosses
@@ -69,7 +71,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def train(args, train_loader, convnet, pan, device, optimizer, criterion):
+def train(args, epoch, train_loader, convnet, pan, device, optimizer, criterion):
     losses = AverageMeter()
     scores = AverageMeter()
     running_loss = 0.0
@@ -82,34 +84,40 @@ def train(args, train_loader, convnet, pan, device, optimizer, criterion):
     convnet.train()
     pan.train()
 
-    for _, batch in enumerate(train_loader):
-        image, target, _, _ = batch
-        inputs = image.to(device)
-        labels = target.to(device)
+    with tqdm(train_loader, unit="batch") as tepoch:
+        for _, batch in enumerate(tepoch):
+            tepoch.set_description(f"Epoch {epoch}")
 
-        for md in [convnet, pan]:
-            md.zero_grad()
+            image, target, _, _ = batch
+            inputs = image.to(device)
+            labels = target.to(device)
 
-        inputs = Variable(inputs)
-        labels = Variable(labels)
+            for md in [convnet, pan]:
+                md.zero_grad()
 
-        fms_blob, z = convnet(inputs)  # feature map, out
-        out_ss = pan(fms_blob[::-1])
-        out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
+            inputs = Variable(inputs)
+            labels = Variable(labels)
 
-        loss_ss = criterion(out_ss, labels.long())
-        acc_ss = accuracy(out_ss, labels.long())
+            fms_blob, z = convnet(inputs)  # feature map, out
+            out_ss = pan(fms_blob[::-1])
+            out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
 
-        losses.update(loss_ss.item(), args.batch_size)
-        scores.update(acc_ss.item(), args.batch_size)
+            loss_ss = criterion(out_ss, labels.long())
+            acc_ss = accuracy(out_ss, labels.long())
 
-        loss_ss.backward(torch.ones_like(loss_ss))
-        for md in ['convnet', 'pan']:
-            optimizer[md].step()
+            losses.update(loss_ss.item(), args.batch_size)
+            scores.update(acc_ss.item(), args.batch_size)
 
-        # statistics
-        running_loss += loss_ss.item()
-        running_corrects += acc_ss.item()
+            loss_ss.backward(torch.ones_like(loss_ss))
+            for md in ['convnet', 'pan']:
+                optimizer[md].step()
+
+            # statistics
+            running_loss += loss_ss.item()
+            running_corrects += acc_ss.item()
+
+            tepoch.set_postfix(loss=loss_ss.item(), accuracy=100. * scores.avg)
+            sleep(0.1)
 
     epoch_loss = running_loss / len(train_loader)
     epoch_acc = running_corrects / len(train_loader)
