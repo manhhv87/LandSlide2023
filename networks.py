@@ -1,7 +1,7 @@
 import torch.nn as nn
-import torch
+# import torch
 import resnet
-from torch.nn import functional as F
+# from torch.nn import functional as F
 
 
 class ResNet50(nn.Module):
@@ -186,7 +186,7 @@ class GAU(nn.Module):
 
 
 class PAN(nn.Module):
-    def __init__(self, blocks, num_class):
+    def __init__(self, blocks, num_class=2):
         """
         :param blocks: Blocks of the network with reverse sequential.
         """

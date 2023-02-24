@@ -1,31 +1,35 @@
+import argparse
+import time
 import numpy as np
 import torch
 from torch.autograd import Variable
 import torch.optim as optim
-from networks import PAN, ResNet50
-
-from dataset import make_data_loader
-import argparse
-from utils.metrics import *
-from utils.loss import SegmentationLosses
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import _LRScheduler
 from collections import OrderedDict
+
+from utils.metrics import *
+from utils.loss import SegmentationLosses
+from dataset import make_data_loader
+from networks import PAN, ResNet50
+
+y_loss = {'train': [], 'val': []}
+y_err = {'train': [], 'val': []}
 
 
 class PolyLR(_LRScheduler):
     """Set the learning rate of each parameter group to the initial lr decayed
     by gamma every epoch. When last_epoch=-1, sets initial lr as lr.
     Args:
-        optimizer (Optimizer): Wrapped optimizer.
+        opt (Optimizer): Wrapped optimizer.
         gamma (float): Multiplicative factor of learning rate decay.
         last_epoch (int): The index of last epoch. Default: -1.
     """
 
-    def __init__(self, optimizer, max_iter, power, last_epoch=-1):
+    def __init__(self, opt, max_iter, power, last_epoch=-1):
         self.max_iter = max_iter
         self.power = power
-        super(PolyLR, self).__init__(optimizer, last_epoch)
+        super(PolyLR, self).__init__(opt, last_epoch)
 
     def get_lr(self):
         return [base_lr * (1 - self.last_epoch / self.max_iter) ** self.power
@@ -47,64 +51,25 @@ def parse_args():
                         help="training list file.")
     parser.add_argument("--test_list", type=str, default='./data/train.txt',
                         help="test list file.")
-
-    parser.add_argument('--epochs', dest='epochs',
-                        help='number of iterations to train',
-                        default=50, type=int)
-
-    parser.add_argument('--cuda', dest='cuda',
-                        help='whether use CUDA', default=True, type=bool)
-    parser.add_argument("--num_workers", type=int, default=4,
-                        help="number of workers for multithread dataloading.")
-    parser.add_argument('--gpu_ids', dest='gpu_ids',
-                        help='use which gpu to train, must be a comma-separated list of integers only (defalt=0)',
-                        default='0', type=str)
-
-    parser.add_argument('--batch_size', dest='batch_size', default=32, type=int,
-                        help='batch_size')
-
-    parser.add_argument('--lr', dest='lr',
-                        help='starting learning rate',
-                        default=0.01, type=float)
-    parser.add_argument('--weight_decay', dest='weight_decay',
-                        help='weight_decay',
-                        default=1e-5, type=float)
-    parser.add_argument('--lr_decay_step', dest='lr_decay_step',
-                        help='step to do learning rate decay, uint is epoch',
-                        default=50, type=int)
-    parser.add_argument('--lr_decay_gamma', dest='lr_decay_gamma',
-                        help='learning rate decay ratio',
-                        default=0.1, type=float)
+    parser.add_argument("--num_classes", type=int, default=2,
+                        help="number of classes.")
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="number of images sent to the network in one step.")
+    parser.add_argument('--epochs', type=int, default=50,
+                        help='number of iterations to train')
+    parser.add_argument("--lr", type=float, default=2.5e-4,
+                        help='starting learning rate')
+    parser.add_argument("--weight_decay", type=float, default=5e-4,
+                        help="regularisation parameter for L2-loss")
+    parser.add_argument('--cuda', type=bool, default=True,
+                        help='whether use CUDA')
+    parser.add_argument("--num_workers", type=int, default=0,
+                        help="number of workers for multithread data-loading")
 
     return parser.parse_args()
 
 
-NUM_CLASS = 2
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print('device:{}'.format(device))
-args = parse_args()
-kwargs = {'num_workers': 0, 'pin_memory': True}
-train_loader, test_loader = make_data_loader(args, **kwargs)
-
-convnet = ResNet50(pretrained=False)
-pan = PAN(blocks=convnet.blocks[::-1], num_class=NUM_CLASS)
-
-convnet.to(device)
-pan.to(device)
-
-criterion = SegmentationLosses(weight=None, cuda=args.cuda).build_loss(mode='ce')
-
-model_name = ['convnet', 'pan']
-optimizer = {'convnet': optim.Adam(convnet.parameters(), lr=args.lr, weight_decay=1e-4),
-             'pan': optim.Adam(pan.parameters(), lr=args.lr, weight_decay=1e-4)}
-
-optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
-                          'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9)}
-
-evaluator = Evaluator(NUM_CLASS)
-
-
-def train(epoch, optimizer, train_loader):
+def train(args, train_loader, convnet, pan, device, optimizer, criterion):
     losses = AverageMeter()
     scores = AverageMeter()
     running_loss = 0.0
@@ -117,7 +82,7 @@ def train(epoch, optimizer, train_loader):
     convnet.train()
     pan.train()
 
-    for iteration, batch in enumerate(train_loader):
+    for _, batch in enumerate(train_loader):
         image, target, _, _ = batch
         inputs = image.to(device)
         labels = target.to(device)
@@ -146,82 +111,139 @@ def train(epoch, optimizer, train_loader):
         running_loss += loss_ss.item()
         running_corrects += acc_ss.item()
 
-        # if iteration % 10 == 0:
-        #     print("Epoch[{}]({}/{}):Loss:{:.4f}".format(epoch, iteration, len(train_loader),
-        #                                                 loss_ss.data))
-
     epoch_loss = running_loss / len(train_loader)
     epoch_acc = running_corrects / len(train_loader)
 
-    log = OrderedDict([
+    return OrderedDict([
         ('loss', losses.avg),
         ('acc', scores.avg),
         ('epoch_loss', epoch_loss),
         ('epoch_acc', epoch_acc),
     ])
 
-    return log
 
-
-def validation(epoch, best_pred):
+def validate(args, test_loader, convnet, pan, evaluator, device, criterion):
     convnet.eval()
     pan.eval()
     evaluator.reset()
     test_loss = 0.0
-    for iteration, batch in enumerate(test_loader):
+
+    losses = AverageMeter()
+    scores = AverageMeter()
+    running_loss = 0.0
+    running_corrects = 0.0
+
+    for _, batch in enumerate(test_loader):
         image, target, _, _ = batch
         image = image.to(device)
         target = target.to(device)
+
         with torch.no_grad():
             fms_blob, z = convnet(image)
             out_ss = pan(fms_blob[::-1])
+
         out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
         loss_ss = criterion(out_ss, target.long())
-        loss = loss_ss.item()
-        test_loss += loss
-        print('epoch:{},test loss:{}'.format(epoch, test_loss / (iteration + 1)))
+        acc_ss = accuracy(out_ss, target.long())
+
+        # loss = loss_ss.item()
+        # test_loss += loss
+        losses.update(loss_ss.item(), args.batch_size)
+        scores.update(acc_ss.item(), args.batch_size)
+
+        # statistics
+        running_loss += loss_ss.item()
+        running_corrects += acc_ss.item()
 
         pred = out_ss.data.cpu().numpy()
         target = target.cpu().numpy()
         pred = np.argmax(pred, axis=1)
         evaluator.add_batch(target, pred)
 
+    epoch_loss = running_loss / len(test_loader)
+    epoch_acc = running_corrects / len(test_loader)
+
     # Fast test during the training
-    Acc = evaluator.Pixel_Accuracy()
-    Acc_class = evaluator.Pixel_Accuracy_Class()
+    acc = evaluator.Pixel_Accuracy()
+    acc_class = evaluator.Pixel_Accuracy_Class()
     mIoU = evaluator.Mean_Intersection_over_Union()
     FWIoU = evaluator.Frequency_Weighted_Intersection_over_Union()
 
-    print('Validation:')
-    print('[Epoch: %d, numImages: %5d]' % (epoch, iteration * args.batch_size + image.shape[0]))
-    print("Acc:{:.5f}, Acc_class:{:.5f}, mIoU:{:.5f}, fwIoU:{:.5f}".format(Acc, Acc_class, mIoU, FWIoU))
-    print('Loss: %.3f' % test_loss)
+    # new_pred = mIoU
+    # if new_pred > best_pred:
+    #     best_pred = new_pred
+    #     torch.save(convnet, './convnet.pth')
+    #     torch.save(pan, './pan.pth')
 
-    new_pred = mIoU
-    if new_pred > best_pred:
-        print('(mIoU)new pred ={},old best pred={}'.format(new_pred, best_pred))
-        best_pred = new_pred
-        torch.save(convnet, './convnet.pth')
-        torch.save(pan, './pan.pth')
-    return best_pred
+    return OrderedDict([
+        ('loss', losses.avg),
+        ('acc', scores.avg),
+        ('acc_pixel', acc),
+        ('acc_class', acc_class),
+        ('mIoU', mIoU),
+        ('FWIoU', FWIoU),
+        ('epoch_loss', epoch_loss),
+        ('epoch_acc', epoch_acc)
+    ])
 
 
-y_loss = {'train': [], 'val': []}
-y_err = {'train': [], 'val': []}
+def main():
+    """Create the modules and start the training."""
+    args = parse_args()
 
-best_pred = 0.0
-for epoch in range(args.epochs):
-    for m in model_name:
-        optimizer_lr_scheduler[m].step(epoch)
-    print('Epoch:{}'.format(epoch))
-    train_log = train(epoch, optimizer, train_loader)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print('device:{}'.format(device))
 
-    y_loss['train'].append(train_log['epoch_loss'])
-    y_err['train'].append(1.0 - train_log['epoch_acc'])
+    train_loader, test_loader = make_data_loader(args, num_workers=args.num_workers, pin_memory=True)
 
-    # Reports the loss for each epoch
-    print('Epoch %d/%d - loss %.4f - acc %.4f' %
-          (epoch + 1, args.epochs, train_log['loss'], train_log['acc']))
+    convnet = ResNet50(pretrained=False)
+    pan = PAN(blocks=convnet.blocks[::-1], num_class=args.num_classes)
 
-    if epoch % (5 - 1) == 0:
-        best_pred = validation(epoch, best_pred)
+    convnet.to(device)
+    pan.to(device)
+
+    optimizer = {'convnet': optim.Adam(convnet.parameters(), lr=args.lr, weight_decay=args.weight_decay),
+                 'pan': optim.Adam(pan.parameters(), lr=args.lr, weight_decay=args.weight_decay)}
+
+    optimizer_lr_scheduler = {'convnet': PolyLR(optimizer['convnet'], max_iter=args.epochs, power=0.9),
+                              'pan': PolyLR(optimizer['pan'], max_iter=args.epochs, power=0.9)}
+
+    criterion = SegmentationLosses(weight=None, cuda=args.cuda).build_loss(mode='ce')
+    evaluator = Evaluator(num_class=args.num_classes)
+
+    best_pred = 0.0
+    for epoch in range(args.epochs):
+        tem_time = time.time()
+
+        for m in ['convnet', 'pan']:
+            optimizer_lr_scheduler[m].step(epoch)
+
+        train_log = train(args=args, train_loader=train_loader, convnet=convnet, pan=pan,
+                          device=device, optimizer=optimizer, criterion=criterion)
+
+        val_log = validate(args=args, test_loader=test_loader, convnet=convnet, pan=pan,
+                           evaluator=evaluator, device=device, criterion=criterion)
+
+        # Gather data and report
+        epoch_time = time.time() - tem_time
+
+        y_loss['train'].append(train_log['epoch_loss'])
+        y_loss['val'].append(val_log['epoch_loss'])
+        y_err['train'].append(1.0 - train_log['epoch_acc'])
+        y_err['val'].append(1.0 - val_log['epoch_acc'])
+
+        if val_log['mIoU'] > best_pred:
+            best_pred = val_log['mIoU']
+            torch.save(convnet, './convnet.pth')
+            torch.save(pan, './pan.pth')
+
+        # Reports the loss for each epoch
+        print(
+            'Epoch %d/%d - %.2fs - loss %.4f - acc %.4f - val_loss %.4f - val_acc %.4f '
+            '- acc_pixel %.4f - acc_class %.4f - mIoU %.4f - FWIoU %.4f' %
+            (epoch + 1, args.epochs, epoch_time, train_log['loss'], train_log['acc'], val_log['loss'],
+             val_log['acc'], val_log['acc_pixel'], val_log['acc_class'], val_log['mIoU'], val_log['FWIoU']))
+
+
+if __name__ == '__main__':
+    main()
