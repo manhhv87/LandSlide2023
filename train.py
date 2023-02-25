@@ -287,9 +287,9 @@ def main():
                 best_pred = val_log['f1']
 
                 print('\nEpoch %d: f1 improved from %0.5f to %0.5f, saving model to %s' % (
-                    epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
+                    epoch + 1, best_pred, val_log['f1'], args.snapshot_dir))
             else:
-                print('\nEpoch %d: f1 (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
+                print('\nEpoch %d: f1 (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['f1'], best_pred))
 
             # Update learning rate
             for md in ['convnet', 'pan']:
