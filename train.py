@@ -253,7 +253,7 @@ def main():
         evaluator = Evaluator(num_class=args.num_classes)
 
         best_pred = -np.Inf
-        train_per_epoch = round(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
+        train_per_epoch = np.ceil(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
 
         for epoch in range(args.epochs):
             kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=25, always_stateful=False)
@@ -266,8 +266,8 @@ def main():
 
             kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
                                 ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
-                                ('fwIoU', val_log['fwIoU']), ('precision', val_log['p']),
-                                ('recall', val_log['r']), ('f1', val_log['f1'])])
+                                ('fwIoU', val_log['fwIoU']), ('precision', val_log['precision']),
+                                ('recall', val_log['recall']), ('f1', val_log['f1'])])
 
             y_loss['train'].append(train_log['epoch_loss'])
             y_loss['val'].append(val_log['epoch_loss'])
@@ -278,18 +278,18 @@ def main():
                        y_loss=y_loss, y_err=y_err, fig=fig, ax0=ax0, ax1=ax1)
 
             # Save best model
-            if val_log['mIoU'] > best_pred:
+            if val_log['f1'] > best_pred:
                 # Save model
                 torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
                 torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
 
                 # Update best validation mIoU
-                best_pred = val_log['mIoU']
+                best_pred = val_log['f1']
 
-                print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
+                print('\nEpoch %d: f1 improved from %0.5f to %0.5f, saving model to %s' % (
                     epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
             else:
-                print('\nEpoch %d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
+                print('\nEpoch %d: f1 (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
 
             # Update learning rate
             for md in ['convnet', 'pan']:
