@@ -278,7 +278,7 @@ def main():
                        y_loss=y_loss, y_err=y_err, fig=fig, ax0=ax0, ax1=ax1)
 
             # Save best model
-            if val_log['mIoU'] > best_pred:
+            if val_log['f1'] > best_pred:
                 # Save model
                 torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
                 torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
@@ -286,10 +286,10 @@ def main():
                 # Update best validation mIoU
                 best_pred = val_log['mIoU']
 
-                print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
+                print('\nEpoch %d: f1 improved from %0.5f to %0.5f, saving model to %s' % (
                     epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
             else:
-                print('\nEpoch %d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
+                print('\nEpoch %d: f1 (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
 
             # Update learning rate
             for md in ['convnet', 'pan']:
