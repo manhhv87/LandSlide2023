@@ -10,6 +10,7 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import _LRScheduler
 from collections import OrderedDict
 import matplotlib.pyplot as plt
+from warnings import warn
 
 from utils.metrics import Evaluator, AverageMeter, accuracy
 from utils.loss import SegmentationLosses
@@ -79,7 +80,7 @@ def parse_args():
     parser.add_argument("--snapshot_dir", type=str, default='./exp/',
                         help="where to save snapshots of the modules.")
 
-    return parser.parse_args()
+    return parser.parse_known_args()
 
 
 def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion):
@@ -100,12 +101,15 @@ def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion):
         inputs = image.to(device)
         labels = target.to(device)
 
+        # Reinitialize grad
         for md in [convnet, pan]:
             md.zero_grad()
 
         inputs = Variable(inputs)
         labels = Variable(labels)
 
+        # Send to device
+        # Forward pass
         fms_blob, z = convnet(inputs)  # feature map, out
         out_ss = pan(fms_blob[::-1])
         out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
@@ -116,11 +120,14 @@ def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion):
         losses.update(loss_ss.item(), args.batch_size)
         scores.update(acc_ss.item(), args.batch_size)
 
+        # Backward pass
         loss_ss.backward(torch.ones_like(loss_ss))
+
+        # Optimize
         for md in ['convnet', 'pan']:
             optimizer[md].step()
 
-        # statistics
+        # Update
         running_loss += loss_ss.item()
         running_corrects += acc_ss.item()
 
@@ -152,39 +159,46 @@ def validate(args, test_loader, convnet, pan, evaluator, device, criterion):
         target = target.to(device)
 
         with torch.no_grad():
+            # Forward pass
             fms_blob, z = convnet(image)
             out_ss = pan(fms_blob[::-1])
 
-        out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
-        loss_ss = criterion(out_ss, target.long())
-        acc_ss = accuracy(out_ss, target.long())
+            out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
+            loss_ss = criterion(out_ss, target.long())
+            acc_ss = accuracy(out_ss, target.long())
 
-        losses.update(loss_ss.item(), args.batch_size)
+            # Update
+            losses.update(loss_ss.item(), args.batch_size)
 
-        # statistics
-        running_loss += loss_ss.item()
-        running_corrects += acc_ss.item()
+            running_loss += loss_ss.item()
+            running_corrects += acc_ss.item()
 
-        pred = out_ss.data.cpu().numpy()
-        target = target.cpu().numpy()
-        pred = np.argmax(pred, axis=1)
-        evaluator.add_batch(target, pred)
+            pred = out_ss.data.cpu().numpy()
+            target = target.cpu().numpy()
+            pred = np.argmax(pred, axis=1)
+            evaluator.add_batch(target, pred)
 
     epoch_loss = running_loss / len(test_loader)
     epoch_acc = running_corrects / len(test_loader)
 
     # Fast test during the training
-    acc = evaluator.Pixel_Accuracy()
-    acc_class = evaluator.Pixel_Accuracy_Class()
-    mIoU = evaluator.Mean_Intersection_over_Union()
-    FWIoU = evaluator.Frequency_Weighted_Intersection_over_Union()
+    acc = evaluator.pixel_accuracy()
+    acc_class = evaluator.pixel_accuracy_class()
+    mIoU = evaluator.mean_intersection_over_union()
+    fwIoU = evaluator.frequency_weighted_intersection_over_union()
+    p = evaluator.precision()
+    r = evaluator.recall()
+    f1 = evaluator.f1()
 
     return OrderedDict([
         ('loss', losses.avg),
         ('acc_pixel', acc),
         ('acc_class', acc_class),
         ('mIoU', mIoU),
-        ('FWIoU', FWIoU),
+        ('fwIoU', fwIoU),
+        ('precision', p),
+        ('recall', r),
+        ('f1', f1),
         ('epoch_loss', epoch_loss),
         ('epoch_acc', epoch_acc)
     ])
@@ -192,11 +206,16 @@ def validate(args, test_loader, convnet, pan, evaluator, device, criterion):
 
 def main():
     """Create the modules and start the training."""
-    args = parse_args()
+    args, unk = parse_args()
 
+    # Check for unknown options
+    if unk:
+        warn("Unknown arguments:" + str(unk) + ".")
+
+    # Set device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Splitting k-fold
+    # Train/ val split
     split_fold(num_fold=args.k_fold, test_image_number=int(get_size_dataset('./data/img') / args.k_fold))
 
     # create modules
@@ -209,7 +228,7 @@ def main():
         # Creating train.txt and test.txt
         get_train_test_list(fold)
 
-        # create snapshots directory
+        # Generate output folder if needed
         snapshot_dir = args.snapshot_dir + "fold" + str(fold)
         if not os.path.exists(snapshot_dir):
             os.makedirs(snapshot_dir)
@@ -221,6 +240,7 @@ def main():
         convnet_.to(device)
         pan_.to(device)
 
+        # Dataloader
         train_loader, test_loader = make_data_loader(args, num_workers=args.num_workers, pin_memory=True)
 
         optimizer = {'convnet': optim.Adam(convnet_.parameters(), lr=args.lr, weight_decay=args.weight_decay),
@@ -232,7 +252,7 @@ def main():
         criterion = SegmentationLosses(weight=None, cuda=args.cuda).build_loss(mode='ce')
         evaluator = Evaluator(num_class=args.num_classes)
 
-        best_pred = 0.0
+        best_pred = -np.Inf
         train_per_epoch = round(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
 
         for epoch in range(args.epochs):
@@ -246,27 +266,34 @@ def main():
 
             kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
                                 ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
-                                ('FWIoW', val_log['FWIoU'])])
-
-            for md in ['convnet', 'pan']:
-                optimizer_lr_scheduler[md].step()
+                                ('fwIoU', val_log['fwIoU']), ('precision', val_log['p']),
+                                ('recall', val_log['r']), ('f1', val_log['f1'])])
 
             y_loss['train'].append(train_log['epoch_loss'])
             y_loss['val'].append(val_log['epoch_loss'])
             y_err['train'].append(1.0 - train_log['epoch_acc'])
             y_err['val'].append(1.0 - val_log['epoch_acc'])
 
-            draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch + 1, x_epoch=x_epoch, y_loss=y_loss, y_err=y_err,
-                       fig=fig, ax0=ax0, ax1=ax1)
+            draw_curve(dir_save_fig=args.snapshot_dir, current_epoch=epoch + 1, x_epoch=x_epoch,
+                       y_loss=y_loss, y_err=y_err, fig=fig, ax0=ax0, ax1=ax1)
 
+            # Save best model
             if val_log['mIoU'] > best_pred:
-                print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
-                    epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
-                best_pred = val_log['mIoU']
+                # Save model
                 torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
                 torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
+
+                # Update best validation mIoU
+                best_pred = val_log['mIoU']
+
+                print('\nEpoch %d: mIoU improved from %0.5f to %0.5f, saving model to %s' % (
+                    epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
             else:
                 print('\nEpoch %d: mIoU (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['mIoU'], best_pred))
+
+            # Update learning rate
+            for md in ['convnet', 'pan']:
+                optimizer_lr_scheduler[md].step()
 
 
 if __name__ == '__main__':
