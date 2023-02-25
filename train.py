@@ -284,7 +284,7 @@ def main():
                 torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
 
                 # Update best validation mIoU
-                best_pred = val_log['mIoU']
+                best_pred = val_log['f1']
 
                 print('\nEpoch %d: f1 improved from %0.5f to %0.5f, saving model to %s' % (
                     epoch + 1, best_pred, val_log['mIoU'], args.snapshot_dir))
