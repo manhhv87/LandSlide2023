@@ -253,7 +253,7 @@ def main():
         evaluator = Evaluator(num_class=args.num_classes)
 
         best_pred = -np.Inf
-        train_per_epoch = round(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
+        train_per_epoch = np.ceil(get_size_dataset("./data/TrainData" + str(fold) + "/train/img/") / args.batch_size)
 
         for epoch in range(args.epochs):
             kbar = Kbar(target=train_per_epoch, epoch=epoch, num_epochs=args.epochs, width=25, always_stateful=False)
@@ -266,8 +266,8 @@ def main():
 
             kbar.add(1, values=[("val_loss", val_log['loss']), ("val_acc", val_log['acc_pixel']),
                                 ('acc_class', val_log['acc_class']), ('mIoU', val_log['mIoU']),
-                                ('fwIoU', val_log['fwIoU']), ('precision', val_log['p']),
-                                ('recall', val_log['r']), ('f1', val_log['f1'])])
+                                ('fwIoU', val_log['fwIoU']), ('precision', val_log['precision']),
+                                ('recall', val_log['recall']), ('f1', val_log['f1'])])
 
             y_loss['train'].append(train_log['epoch_loss'])
             y_loss['val'].append(val_log['epoch_loss'])
