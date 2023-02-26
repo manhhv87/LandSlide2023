@@ -101,29 +101,29 @@ def train(args, kbar, train_loader, convnet, pan, device, optimizer, criterion):
         inputs = image.to(device)
         labels = target.to(device)
 
-        # zero the parameter gradients
+        # Reinitialize grad
         for md in [convnet, pan]:
             md.zero_grad()
 
         inputs = Variable(inputs)
         labels = Variable(labels)
 
-        # forward propagation
+        # Send to device
+        # Forward pass
         fms_blob, z = convnet(inputs)  # feature map, out
         out_ss = pan(fms_blob[::-1])
         out_ss = F.interpolate(out_ss, scale_factor=4, mode='nearest')
 
-        # loss calculation
         loss_ss = criterion(out_ss, labels.long())
         acc_ss = accuracy(out_ss, labels.long())
 
         losses.update(loss_ss.item(), args.batch_size)
         scores.update(acc_ss.item(), args.batch_size)
 
-        # backward propagation
+        # Backward pass
         loss_ss.backward(torch.ones_like(loss_ss))
 
-        # params update
+        # Optimize
         for md in ['convnet', 'pan']:
             optimizer[md].step()
 
@@ -216,7 +216,7 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # Train/ val split
-    # split_fold(num_fold=args.k_fold, test_image_number=int(get_size_dataset('./data/img') / args.k_fold))
+    split_fold(num_fold=args.k_fold, test_image_number=int(get_size_dataset('./data/img') / args.k_fold))
 
     # create modules
     convnet = ResNet50(pretrained=False)
@@ -278,18 +278,18 @@ def main():
                        y_loss=y_loss, y_err=y_err, fig=fig, ax0=ax0, ax1=ax1)
 
             # Save best model
-            if val_log['f1'][1] > best_pred:
+            if val_log['f1'] > best_pred:
                 # Save model
                 torch.save(convnet.state_dict(), os.path.join(args.snapshot_dir, 'convnet.pth'))
                 torch.save(pan.state_dict(), os.path.join(args.snapshot_dir, 'pan.pth'))
 
-                print('\nEpoch %d: f1 improved from %0.5f to %0.5f, saving model to %s' % (
-                    epoch + 1, best_pred, val_log['f1'][1], args.snapshot_dir))
-            else:
-                print('\nEpoch %d: f1 (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['f1'][1], best_pred))
+                # Update best validation mIoU
+                best_pred = val_log['f1']
 
-            # Update best validation mIoU
-            best_pred = val_log['f1'][1]
+                print('\nEpoch %d: f1 improved from %0.5f to %0.5f, saving model to %s' % (
+                    epoch + 1, best_pred, val_log['f1'], args.snapshot_dir))
+            else:
+                print('\nEpoch %d: f1 (%.05f) did not improve from %0.5f' % (epoch + 1, val_log['f1'], best_pred))
 
             # Update learning rate
             for md in ['convnet', 'pan']:

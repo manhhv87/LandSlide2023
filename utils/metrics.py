@@ -61,34 +61,21 @@ class Evaluator(object):
         return fwIoU
 
     def precision(self):
-        """
-
-        Returns:
-            precision = TP / TP + FP
-        """
         tp = np.diag(self.confusion_matrix)
-        fp = np.sum(self.confusion_matrix, axis=1) - tp
+        fp = np.sum(self.confusion_matrix, axis=0) - tp
         return tp / (tp + fp + 1e-7)
 
     def recall(self):
-        """
-
-        Returns:
-            recall = TP / TP + FN
-        """
         tp = np.diag(self.confusion_matrix)
-        fn = np.sum(self.confusion_matrix, axis=0) - tp
+        fn = np.sum(self.confusion_matrix, axis=1) - tp
         return tp / (tp + fn + 1e-7)
 
     def f1(self):
         tp = np.diag(self.confusion_matrix)
         fp = np.sum(self.confusion_matrix, axis=0) - tp
         fn = np.sum(self.confusion_matrix, axis=1) - tp
-        # tn = np.sum(self.confusion_matrix) - (tp + fp + fn)
         precision = tp / (tp + fp + 1e-7)
         recall = tp / (tp + fn + 1e-7)
-
-        # calculate micro average f1 score based on TP, FP, FN
         return (2.0 * precision * recall) / (precision + recall + 1e-7)
 
     def _generate_matrix(self, gt_image, pre_image):
@@ -101,8 +88,7 @@ class Evaluator(object):
         Returns:
 
         """
-        # remove classes from unlabeled pixels in gt image and predict
-        mask = (gt_image >= 0) & (gt_image < self.num_class)    # filter out other categories
+        mask = (gt_image >= 0) & (gt_image < self.num_class)
         label = self.num_class * gt_image[mask].astype('int') + pre_image[mask]
         count = np.bincount(label, minlength=self.num_class ** 2)
         confusion_matrix = count.reshape(self.num_class, self.num_class)
