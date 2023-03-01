@@ -59,7 +59,7 @@ def parse_args():
                         help="dataset path.")
     parser.add_argument("--train_list", type=str, default='./data/train.txt',
                         help="training list file.")
-    parser.add_argument("--test_list", type=str, default='./data/train.txt',
+    parser.add_argument("--test_list", type=str, default='./data/test.txt',
                         help="test list file.")
     parser.add_argument("--num_classes", type=int, default=2,
                         help="number of classes.")
